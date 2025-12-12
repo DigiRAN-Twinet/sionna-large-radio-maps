@@ -1,0 +1,29 @@
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+
+__pycache__/
+.ipynb_checkpoints/
+.DS_Store
+*.swp
+
+# Scene files
+*.blend
+*.blend1
+scenes/**/*.ply
+scenes/**/*.obj
+scenes/**/*.xml
+
+# Data directories
+data/
+cache/
+overpass/
+
+# Logs and temporary files
+*.ply
+*.png
+*.exr
+*.log
+*.out

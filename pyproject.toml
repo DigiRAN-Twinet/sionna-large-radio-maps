@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sionna-large-radio-maps"
+version = "0.1.0"
+description = "Computing large-scale radio maps with Sionna RT"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [
+    {name = "Baptiste Nicolet", email = "sionna@nvidia.com"},
+    {name = "Merlin Nimier-David", email = "sionna@nvidia.com"}
+]
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Telecommunications Industry",
+    "Topic :: Scientific/Engineering :: Visualization",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+dependencies = [
+    "basemap",
+    "boto3",
+    "geopandas",
+    "matplotlib",
+    "numpy",
+    "pandas",
+    "Pillow",
+    "pyproj",
+    "scipy",
+    "shapely",
+    "sionna-rt==1.2.1",
+    "tqdm",
+    "open3d",
+    "triangle",
+    "osmnx"
+]
+
+[project.optional-dependencies]
+dev = [
+    "black",
+    "pylint",
+]
+
+[tool.pylint.messages_control]
+disable = [
+    "R0902",  # too-many-instance-attributes
+    "R0912",  # too-many-branches
+    "R0913",  # too-many-arguments
+    "R0914",  # too-many-locals
+    "R0915",  # too-many-statements
+    "R0917",  # too-many-positional-arguments
+    "E1101",  # no-member
+    "W1203",  # logging-fstring-interpolation
+    "C0114",  # missing-module-docstring
+    "C0115",  # missing-class-docstring
+    "C0116",  # missing-function-docstring
+]
+
+[tool.pylint.format]
+max-line-length = 110
+
+[tool.uv]
+package = false
