@@ -2,8 +2,8 @@
 """
 Boulder, CO Coverage Map Dataset Generator
 
-Generates path gain and elevation maps by dynamically building 3D scenes 
-from OSM buildings + AWS elevation tiles, then ray tracing with Sionna RT.
+Urban mountain area - generates path gain and elevation maps by dynamically
+building 3D scenes from OSM buildings + AWS elevation tiles, then ray tracing with Sionna RT.
 """
 
 import os
@@ -58,6 +58,7 @@ import sionna.rt as rt
 # ==================== Configuration ====================
 
 # Boulder, CO bounds
+CITY_NAME = "boulder"
 BOULDER_LAT = (39.97, 40.07)
 BOULDER_LON = (-105.31, -105.20)
 
@@ -76,7 +77,7 @@ DIFFRACTION = True
 NUM_SAMPLES_TO_GENERATE = 1000
 WORKERS_PER_GPU = 1         # Number of workers per GPU
 GPU_MEMORY_FRACTION = 0.20  # GPU memory fraction per worker (0.20 = 20%)
-OUTPUT_DIR = Path(f"/output/boulder_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+OUTPUT_DIR = Path(f"/output/{CITY_NAME}_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
 GRID_SIZE = 200             # Output grid size
 PLOT = False
 MIN_BUILDINGS = 10           # Minimum buildings required per sample
@@ -424,12 +425,7 @@ class SceneBuilder:
         self.scene.add(rt.Transmitter("tx", position=[local_pos[0], local_pos[1], tx_z]))
     
     def compute_coverage(self):
-        """Run ray tracing to get path gain.
-        
-        Coverage map is computed at terrain surface level.
-        Since terrain is normalized to Z=0 (local coordinate system), the coverage
-        map samples at ground level. Buildings sit on this normalized terrain.
-        """
+        """Run ray tracing to get path gain."""
         solver = rt.RadioMapSolver()
         rm = solver(self.scene, max_depth=MAX_DEPTH, diffraction=DIFFRACTION,
                     cell_size=(self.resolution, self.resolution), samples_per_tx=NUM_SAMPLES,
@@ -437,12 +433,7 @@ class SceneBuilder:
         return rm.path_gain.numpy().squeeze()
     
     def get_elevation(self):
-        """Get normalized elevation map including terrain and buildings.
-        
-        Returns a grid where each cell contains the height above local ground level.
-        For terrain-only cells, this is the normalized terrain elevation.
-        For building cells, this is terrain + building height.
-        """
+        """Get normalized elevation map including terrain and buildings."""
         min_lat, min_lon, max_lat, max_lon = self.bbox
         bl = self.to_utm.transform(min_lon, min_lat)
         tr = self.to_utm.transform(max_lon, max_lat)
@@ -565,7 +556,8 @@ def generate_sample(args):
         # Save
         with h5py.File(output_file, 'w') as f:
             f.attrs.update(center_lat=lat, center_lon=lon, radius=radius, frequency=FREQUENCY,
-                          building_count=builder.building_count, tx_height=TX_HEIGHT)
+                          building_count=builder.building_count, tx_height=TX_HEIGHT,
+                          city=CITY_NAME, terrain_type="urban_mountain")
             f.create_dataset('elevation_map', data=elevation)
             f.create_dataset('path_gain', data=path_gain)
         
@@ -621,7 +613,7 @@ def main():
     actual_workers = num_gpus * WORKERS_PER_GPU
     
     print("=" * 60)
-    print("Boulder Coverage Map Generator (Parallel)")
+    print(f"{CITY_NAME.upper()} Coverage Map Generator (Parallel)")
     print("=" * 60)
     print(f"Samples: {NUM_SAMPLES_TO_GENERATE}")
     print(f"Workers: {actual_workers} ({WORKERS_PER_GPU} per GPU x {num_gpus} GPUs)")
@@ -634,11 +626,9 @@ def main():
     # Launch worker subprocesses
     processes = []
     for i in range(actual_workers):
-        # Assign GPU to worker (round-robin across GPUs)
         gpu_id = i % num_gpus if num_gpus > 0 else 0
         env = os.environ.copy()
         env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
-        # Limit GPU memory per worker
         env['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
         env['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
         env['GPU_MEMORY_FRACTION'] = str(GPU_MEMORY_FRACTION)
@@ -653,7 +643,6 @@ def main():
     # Monitor progress
     try:
         while any(p.poll() is None for _, p in processes):
-            # Count completed samples
             h5_files = list(OUTPUT_DIR.glob("data_*.h5"))
             count = len(h5_files)
             elapsed = time.time() - start
@@ -667,20 +656,16 @@ def main():
     except KeyboardInterrupt:
         print("\nInterrupted - terminating workers...")
     
-    # Terminate any remaining workers
     for i, p in processes:
         if p.poll() is None:
             p.terminate()
     
-    # Wait for all to finish
     for i, p in processes:
         p.wait()
-    
-    # Final count
+
     h5_files = list(OUTPUT_DIR.glob("data_*.h5"))
     count = len(h5_files)
     
-    # Cleanup cache directories
     for cache_d in OUTPUT_DIR.glob("cache_*"):
         shutil.rmtree(cache_d, ignore_errors=True)
     
@@ -692,7 +677,6 @@ def main():
 
 def run_worker(worker_id, total_workers, output_dir):
     """Worker process - generates samples assigned to this worker."""
-    # Limit GPU memory for this worker
     memory_fraction = float(os.environ.get('GPU_MEMORY_FRACTION', 0.20))
     try:
         import tensorflow as tf
@@ -700,21 +684,18 @@ def run_worker(worker_id, total_workers, output_dir):
         if gpus:
             for gpu in gpus:
                 tf.config.experimental.set_memory_growth(gpu, True)
-                # Set memory limit as fraction of total
                 tf.config.set_logical_device_configuration(
                     gpu,
                     [tf.config.LogicalDeviceConfiguration(
-                        memory_limit=int(memory_fraction * 80000)  # ~80GB per GPU, adjust as needed
+                        memory_limit=int(memory_fraction * 80000)  
                     )]
                 )
     except Exception as e:
         logger.warning(f"Could not set TensorFlow GPU memory limit: {e}")
     
-    # Also limit Dr.Jit/Mitsuba memory usage
     try:
         import drjit as dr
-        # Flush caches frequently to reduce memory footprint
-        dr.set_flag(dr.JitFlag.KernelHistory, False)  # Disable kernel history to save memory
+        dr.set_flag(dr.JitFlag.KernelHistory, False) 
     except Exception as e:
         logger.warning(f"Could not configure Dr.Jit: {e}")
     
@@ -746,7 +727,6 @@ def run_worker(worker_id, total_workers, output_dir):
         except Exception as e:
             logger.error(f"Worker {worker_id} error: {e}")
         
-        # Aggressive memory cleanup after each sample
         gc.collect()
         try:
             dr.flush_malloc_cache()
