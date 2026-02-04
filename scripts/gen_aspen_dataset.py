@@ -53,6 +53,7 @@ except Exception:
     print("Using LLVM mono_polarized variant")
 
 import sionna.rt as rt
+from sionna.rt import AntennaPattern, register_antenna_pattern
 
 
 # ==================== Configuration ====================
@@ -74,22 +75,145 @@ NUM_SAMPLES = int(5e7)
 DIFFRACTION = True
 
 # Output
-NUM_SAMPLES_TO_GENERATE = 1000
+NUM_SAMPLES_TO_GENERATE = 1
 WORKERS_PER_GPU = 1         # Number of workers per GPU
 GPU_MEMORY_FRACTION = 0.20  # GPU memory fraction per worker (0.20 = 20%)
-OUTPUT_DIR = Path(f"/output/{CITY_NAME}_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+OUTPUT_DIR = Path(f"./output/{CITY_NAME}_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
 GRID_SIZE = 200             # Output grid size
-PLOT = False
-MIN_BUILDINGS = 10           # Rural area - allow samples with few/no buildings
+PLOT = True
+MIN_BUILDINGS = 2           # Rural area - allow samples with few/no buildings
 
 # Heights
 TX_HEIGHT = 25.0            # TX height above terrain (meters)
 RX_HEIGHT = 1.5             # RX height above terrain (meters, standard pedestrian UE height)
 MAX_ELEVATION_RANGE = 500   # Mountain terrain - allow significant elevation range
 
+# Antenna
+USE_CUSTOM_ANTENNA = True          # Set True if you are using a Custom Pattern
+ANTENNA_PATTERN_NAME = "galtronics" # Set Antenna Pattern Name
+ANTENNA_PATTERN_FILE = "./galt.txt" # Set the Antenna Pattern File Path
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# ========== Custom Antenna Pattern Loading =========
+
+def load_custom_antenna_pattern(filepath):
+    with open(filepath, 'r') as f:
+        lines = f.readlines()
+    
+    metadata = {}
+    h_angles, h_gains = [], []
+    v_angles, v_gains = [], []
+    mode = None
+    
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if not line:
+            i += 1
+            continue
+        
+        if line.startswith('HORIZONTAL'):
+            mode = 'H'
+            i += 1
+            if i < len(lines) and lines[i].strip().isdigit():
+                i += 1
+            continue
+        elif line.startswith('VERTICAL'):
+            mode = 'V'
+            i += 1
+            if i < len(lines) and lines[i].strip().isdigit():
+                i += 1
+            continue
+        
+        if mode is None:
+            if '\t' in line:
+                parts = line.split('\t', 1)
+                if len(parts) == 2:
+                    metadata[parts[0]] = parts[1]
+        elif mode == 'H':
+            if '\t' in line:
+                parts = line.split('\t')
+                if len(parts) == 2:
+                    try:
+                        h_angles.append(float(parts[0]))
+                        h_gains.append(float(parts[1]))
+                    except ValueError:
+                        pass
+        elif mode == 'V':
+            if '\t' in line:
+                parts = line.split('\t')
+                if len(parts) == 2:
+                    try:
+                        v_angles.append(float(parts[0]))
+                        v_gains.append(float(parts[1]))
+                    except ValueError:
+                        pass
+        i += 1
+    
+    return {
+        'metadata': metadata,
+        'h_angles': np.array(h_angles),
+        'h_gains': np.array(h_gains),
+        'v_angles': np.array(v_angles),
+        'v_gains': np.array(v_gains)
+    }
+
+
+class CustomPattern(AntennaPattern):
+    def __init__(self, pattern_data, polarization="V"):
+        self.pattern_data = pattern_data
+        
+        def custom_pattern_func(theta, phi):
+            theta_deg = theta * (180.0 / np.pi)
+            phi_deg = phi * (180.0 / np.pi)
+            
+            theta_np = np.array(theta_deg)
+            phi_np = np.array(phi_deg)
+            phi_np = np.mod(phi_np, 360.0)
+            
+            h_gain_db = np.interp(phi_np, pattern_data['h_angles'], 
+                                 pattern_data['h_gains'], period=360.0)
+            v_gain_db = np.interp(theta_np, pattern_data['v_angles'], 
+                                 pattern_data['v_gains'])
+            
+            total_gain_db = h_gain_db + v_gain_db - pattern_data['h_gains'].max()
+            gain_linear = 10.0 ** (total_gain_db / 20.0)
+            
+            gain_mi = mi.Float(gain_linear)
+            c_theta = mi.Complex2f(gain_mi, 0.0)
+            c_phi = dr.zeros(mi.Complex2f, dr.width(c_theta))
+            
+            return c_theta, c_phi
+        
+        self.patterns = [custom_pattern_func]
+
+
+def custom_factory(pattern_data):
+    def factory(polarization="V", **kwargs):
+        return CustomPattern(pattern_data, polarization=polarization)
+    return factory
+
+PATTERN_DATA = None
+
+if USE_CUSTOM_ANTENNA and ANTENNA_PATTERN_FILE:
+    try:
+        if Path(ANTENNA_PATTERN_FILE).exists():
+            PATTERN_DATA = load_custom_antenna_pattern(ANTENNA_PATTERN_FILE)
+            factory = custom_factory(PATTERN_DATA)
+            register_antenna_pattern(ANTENNA_PATTERN_NAME, factory)
+            logger.info(f"Registered '{ANTENNA_PATTERN_NAME}' pattern")
+        else:
+            logger.warning(f"'{ANTENNA_PATTERN_NAME}' Pattern File not found, Using ISO")
+            ANTENNA_PATTERN_NAME = "iso"
+    except Exception as e:
+        logger.warning(f"Failed to load '{ANTENNA_PATTERN_NAME}' pattern : {e}, using ISO")
+        ANTENNA_PATTERN_NAME = "iso"
+
+else:
+    ANTENNA_PATTERN_NAME = "iso"
+    logger.info("Using ISO Antenna Pattern")
 
 # ==================== HeightMap ====================
 
@@ -400,7 +524,7 @@ class SceneBuilder:
     
     def _setup_antennas(self):
         self.scene.tx_array = rt.PlanarArray(num_rows=8, num_cols=2, vertical_spacing=0.7,
-                                             horizontal_spacing=0.5, pattern="iso", polarization="V")
+                                             horizontal_spacing=0.5, pattern=ANTENNA_PATTERN_NAME, polarization="V")
         self.scene.rx_array = rt.PlanarArray(num_rows=1, num_cols=1, pattern="iso", polarization="V")
     
     def _add_transmitter(self):
@@ -420,9 +544,14 @@ class SceneBuilder:
         # Normalize elevation by subtracting z_offset, then add TX_HEIGHT
         local_elev = elev - self.z_offset
         tx_z = local_elev + TX_HEIGHT
+
+        yaw = np.random.uniform(0, 360)
+        pitch = np.random.uniform(0, 10)
+        roll = 0
+        self.tx_orientation = [yaw, pitch, roll]
         
         logger.info(f"TX position: ({local_pos[0]:.1f}, {local_pos[1]:.1f}, {tx_z:.1f}) [elev={elev:.1f}, z_offset={self.z_offset:.1f}]")
-        self.scene.add(rt.Transmitter("tx", position=[local_pos[0], local_pos[1], tx_z]))
+        self.scene.add(rt.Transmitter("tx", position=[local_pos[0], local_pos[1], tx_z], orientation=[yaw,pitch,roll]))
     
     def compute_coverage(self):
         """Run ray tracing to get path gain."""
@@ -557,6 +686,10 @@ def generate_sample(args):
         with h5py.File(output_file, 'w') as f:
             f.attrs.update(center_lat=lat, center_lon=lon, radius=radius, frequency=FREQUENCY,
                           building_count=builder.building_count, tx_height=TX_HEIGHT,
+                          tx_orientation_yaw=builder.tx_orientation[0],
+                          tx_orientation_pitch=builder.tx_orientation[1],
+                          tx_orientation_roll=builder.tx_orientation[2],
+                          antenna_pattern=ANTENNA_PATTERN_NAME,
                           city=CITY_NAME, terrain_type="rural_mountain")
             f.create_dataset('elevation_map', data=elevation)
             f.create_dataset('path_gain', data=path_gain)
