@@ -89,7 +89,7 @@ RX_HEIGHT = 1.5             # RX height above terrain (meters, standard pedestri
 MAX_ELEVATION_RANGE = 100   # Coastal urban - relatively flat terrain
 
 # Antenna
-USE_CUSTOM_ANTENNA = True          # Set True if you are using a Custom Pattern
+USE_CUSTOM_ANTENNA = True        # Set True if you are using a Custom Pattern
 ANTENNA_PATTERN_NAME = "galtronics" # Set Antenna Pattern Name
 ANTENNA_PATTERN_FILE = "./galt.txt" # Set the Antenna Pattern File Path
 
